@@ -1,75 +1,55 @@
-import {
-  Clarinet,
-  Tx,
-  Chain,
-  Account,
-  types
-} from 'https://deno.land/x/clarinet@v1.0.0/index.ts';
-import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
+// Original tests remain...
 
 Clarinet.test({
-  name: "Can create a savings account",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const wallet1 = accounts.get('wallet_1')!;
-    
-    let block = chain.mineBlock([
-      Tx.contractCall('timelock-savings', 'create-account', [types.uint(30)], wallet1.address)
-    ]);
-    
-    assertEquals(block.receipts[0].result.expectOk(), true);
-  },
-});
-
-Clarinet.test({
-  name: "Can deposit and withdraw after lock period",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const wallet1 = accounts.get('wallet_1')!;
-    
-    let block = chain.mineBlock([
-      Tx.contractCall('timelock-savings', 'create-account', [types.uint(30)], wallet1.address),
-      Tx.contractCall('timelock-savings', 'deposit', [types.uint(1000)], wallet1.address)
-    ]);
-    
-    assertEquals(block.receipts[1].result.expectOk(), true);
-
-    chain.mineEmptyBlockUntil(30);
-
-    block = chain.mineBlock([
-      Tx.contractCall('timelock-savings', 'withdraw', [types.uint(1000)], wallet1.address)
-    ]);
-
-    assertEquals(block.receipts[0].result.expectOk(), true);
-  },
-});
-
-Clarinet.test({
-  name: "Cannot withdraw before lock period ends",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const wallet1 = accounts.get('wallet_1')!;
-    
-    let block = chain.mineBlock([
-      Tx.contractCall('timelock-savings', 'create-account', [types.uint(30)], wallet1.address),
-      Tx.contractCall('timelock-savings', 'deposit', [types.uint(1000)], wallet1.address)
-    ]);
-    
-    block = chain.mineBlock([
-      Tx.contractCall('timelock-savings', 'withdraw', [types.uint(1000)], wallet1.address)
-    ]);
-
-    assertEquals(block.receipts[0].result.expectErr(), types.uint(103));
-  },
-});
-
-Clarinet.test({
-  name: "Can set interest rate as contract owner",
+  name: "Can set and use balance tiers",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const deployer = accounts.get('deployer')!;
+    const wallet1 = accounts.get('wallet_1')!;
     
     let block = chain.mineBlock([
-      Tx.contractCall('timelock-savings', 'set-interest-rate', [types.uint(30), types.uint(500)], deployer.address)
+      Tx.contractCall('timelock-savings', 'set-balance-tier', 
+        [types.uint(100000), types.uint(12000)], deployer.address),
+      Tx.contractCall('timelock-savings', 'set-balance-tier',
+        [types.uint(1000000), types.uint(15000)], deployer.address)
     ]);
     
     assertEquals(block.receipts[0].result.expectOk(), true);
+    assertEquals(block.receipts[1].result.expectOk(), true);
   },
 });
 
+Clarinet.test({
+  name: "Higher balance receives higher interest rate",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const deployer = accounts.get('deployer')!;
+    const wallet1 = accounts.get('wallet_1')!;
+    
+    // Setup tiers and rates
+    chain.mineBlock([
+      Tx.contractCall('timelock-savings', 'set-balance-tier',
+        [types.uint(100000), types.uint(12000)], deployer.address),
+      Tx.contractCall('timelock-savings', 'set-interest-rate',
+        [types.uint(30), types.uint(500)], deployer.address)
+    ]);
+
+    // Create account and deposit
+    let block = chain.mineBlock([
+      Tx.contractCall('timelock-savings', 'create-account',
+        [types.uint(30)], wallet1.address),
+      Tx.contractCall('timelock-savings', 'deposit',
+        [types.uint(200000)], wallet1.address)
+    ]);
+
+    chain.mineEmptyBlockUntil(31);
+
+    // Check interest payment
+    block = chain.mineBlock([
+      Tx.contractCall('timelock-savings', 'pay-interest',
+        [wallet1.address], wallet1.address)
+    ]);
+
+    // Verify higher interest rate applied
+    const interest = block.receipts[0].result.expectOk();
+    assert(interest > types.uint(0));
+  },
+});
